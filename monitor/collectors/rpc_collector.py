@@ -14,9 +14,8 @@ from chia.rpc.harvester_rpc_client import HarvesterRpcClient
 from chia.rpc.rpc_client import RpcClient
 from chia.rpc.wallet_rpc_client import WalletRpcClient
 from chia.server.outbound_message import NodeType
-from chia.util.config import load_config
-from chia.util.default_root import DEFAULT_ROOT_PATH
 from chia.util.ints import uint16
+
 from monitor.collectors.collector import Collector
 from monitor.events import (BlockchainStateEvent, ChiaEvent, ConnectionsEvent,
                             HarvesterPlotsEvent, WalletBalanceEvent)
@@ -63,34 +62,23 @@ class RpcCollector(Collector):
         event = WalletBalanceEvent(ts=datetime.now(), confirmed=str(sum(confirmed_balances)))
         await self.publish_event(event)
 
-    async def get_plots(self, harvester_rpc_port: int, harvester_rpc_hostname: str) -> Optional[Dict[str, Any]]:
+    async def get_plots(self) -> Optional[Dict[str, Any]]:
         plots = None
         try:
-            config = load_config(DEFAULT_ROOT_PATH, "config.yaml")
-            if harvester_rpc_hostname is None:
-                harvester_rpc_hostname = config["self_hostname"]
-
-            if harvester_rpc_port is None:
-                harvester_rpc_port = config["harvester"]["rpc_port"]
-            harvester_client = await HarvesterRpcClient.create(
-                harvester_rpc_hostname, uint16(harvester_rpc_port), DEFAULT_ROOT_PATH, config
-            )
-            plots = await harvester_client.get_plots()
+            plots = await self.harvester_client.get_plots()
         except Exception as e:
             if isinstance(e, aiohttp.ClientConnectorError):
                 print(
-                    f"Connection error. Check if harvester is running at {harvester_rpc_hostname}:{harvester_rpc_port}")
+                    f"Failed to get harvester via RPC. Is your wallet running?")
             else:
                 print(f"Exception from 'harvester' {e}")
 
-        harvester_client.close()
-        await harvester_client.await_closed()
         return plots
 
-    async def get_all_plots(self, harvester_rpc_port: int, harvester_hosts: List[str]) -> Optional[Dict[str, Any]]:
+    async def get_all_plots(self, harvester_hosts: List[str]) -> Optional[Dict[str, Any]]:
         all_plots = None
         for host in harvester_hosts:
-            plots = await self.get_plots(harvester_rpc_port, host)
+            plots = await self.get_plots()
             if plots is not None and plots["success"]:
                 if all_plots is None:
                     all_plots = plots
@@ -98,31 +86,23 @@ class RpcCollector(Collector):
                     all_plots["plots"] += plots["plots"]
         return all_plots
 
-    async def get_harvesters(self, farmer_rpc_port: int) -> List[str]:
+    async def get_harvesters(self) -> List[str]:
         harvester_hosts = []
         try:
-            config = load_config(DEFAULT_ROOT_PATH, "config.yaml")
-            self_hostname = config["self_hostname"]
-            if farmer_rpc_port is None:
-                farmer_rpc_port = config["farmer"]["rpc_port"]
-            farmer_client = await FarmerRpcClient.create(self_hostname, uint16(farmer_rpc_port), DEFAULT_ROOT_PATH,
-                                                         config)
-            connections = await farmer_client.get_connections()
+            connections = await self.farmer_client.get_connections()
             for c in connections:
                 if c["type"] == NodeType.HARVESTER:
                     harvester_hosts.append(c["peer_host"])
         except Exception as e:
             print(f"Exception from 'farmer' {e}")
 
-        farmer_client.close()
-        await farmer_client.await_closed()
         return harvester_hosts
 
     async def get_harvester_plots(self) -> None:
         try:
             # plots = await self.harvester_client.get_plots()
-            harvesters = await self.get_harvesters(None)
-            plots = await self.get_all_plots(None,harvesters)
+            harvesters = await self.get_harvesters()
+            plots = await self.get_all_plots(harvesters)
         except:
             raise ConnectionError("Failed to get harvester plots via RPC. Is your harvester running?")
         event = HarvesterPlotsEvent(ts=datetime.now(),
